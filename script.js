@@ -122,7 +122,7 @@ async function sendMessage() {
 
     } catch (error) {
         setTyping(false);
-        addMessage('counselor', "I apologize, but I'm having trouble connecting right now. Please make sure the server is running and try again. If you're in crisis, please reach out to a crisis helpline immediately.");
+        addMessage('counselor', error);
         console.error('Error:', error);
     }
 
