@@ -18,7 +18,7 @@ app.add_middleware(
 )
 
 # Get API key
-api_key = os.environ.get("GOOGLE_API_KEY", "AIzaSyAbG9DmKFSc-4oWI3yrXS557JyigXSN2pU")
+api_key = os.environ.get("GOOGLE_API_KEY")
 client = genai.Client(api_key=api_key)
 
 # System prompt and few-shot examples
@@ -192,11 +192,12 @@ Counselor's thought process:"""
             conversations[request.session_id] = conversations[request.session_id][-20:]
         
         return ChatResponse(
-            response=counselor_response,
+            response=counselor_response if api_key else "work in progress",
             session_id=request.session_id
         )
         
     except Exception as e:
+        print(e)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reset")
