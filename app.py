@@ -208,7 +208,8 @@ async def reset(request: ResetRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.environ.get("PORT", 8000))
+   # port = int(os.environ.get("PORT", 8000))
+    port=8000
     print("\n" + "="*60)
     print("AI Counselor Web Server Starting...")
     print("="*60)
