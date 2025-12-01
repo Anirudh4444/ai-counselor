@@ -93,7 +93,8 @@ class ChatRequest(BaseModel):
     session_id: str = "default"
 
 class ChatResponse(BaseModel):
-    response: str
+    task: str  # "PLAN" or "ANSWER"
+    prompt: str
     session_id: str
 
 class ResetRequest(BaseModel):
@@ -116,7 +117,7 @@ async def get_styles():
 async def get_script():
     return FileResponse(BASE_DIR / "script.js")
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(request: ChatRequest):
     try:
         if not request.message:
@@ -128,72 +129,62 @@ async def chat(request: ChatRequest):
         
         conversation_history = "\n".join(conversations[request.session_id])
         
-        # Construct prompt
-        full_prompt = f"""{SYSTEM_PROMPT}
+        # Step 1: Generate PLAN (thinking process)
+        plan_prompt = f"""{SYSTEM_PROMPT}
 
 {FEW_SHOT_EXAMPLES}
-
-Now, respond to this person with the same level of empathy and thoughtfulness. First, think through:
-1. What are they feeling?
-2. What might be the underlying cause?
-3. What do they need right now?
-4. How should I respond?
-
-Then provide your compassionate response.
 
 {conversation_history}
 
 User: "{request.message}"
 
-Counselor's thought process:"""
+Think through the following step-by-step and write out your thought process:
+1. What are they feeling?
+2. What might be the underlying cause?
+3. What do they need right now?
+4. How should I respond?
+
+Provide your internal thought process in a clear, structured way:"""
         
-        # Get response from Gemini
-        response = client.models.generate_content(
+        # Get thinking process from Gemini
+        plan_response = client.models.generate_content(
             model="gemini-2.5-flash",
-            contents=full_prompt,
+            contents=plan_prompt,
+            config={
+                "temperature": 0.7,
+                "max_output_tokens": 512,
+            }
+        )
+        
+        thinking_process = plan_response.text.strip()
+        
+        # Step 2: Generate ANSWER (final response)
+        answer_prompt = f"""{SYSTEM_PROMPT}
+
+{FEW_SHOT_EXAMPLES}
+
+{conversation_history}
+
+User: "{request.message}"
+
+Your thought process:
+{thinking_process}
+
+Based on your analysis above, provide ONLY your compassionate counselor response directly to the user, without showing your thought process or any labels:"""
+        
+        # Get final response from Gemini
+        answer_response = client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=answer_prompt,
             config={
                 "temperature": 0.7,
                 "max_output_tokens": 1024,
             }
         )
         
-        counselor_response = response.text
+        counselor_response = answer_response.text.strip()
         
-        # Extract only the final counselor response (hide thought process)
-        # Try multiple patterns to find where the actual response starts
-        
-        # Pattern 1: Look for "Counselor:" after the thought process
-        if "Counselor:" in counselor_response:
-            parts = counselor_response.split("Counselor:")
-            # Get the last occurrence (the actual response, not the label in examples)
-            counselor_response = parts[-1].strip()
-        
-        # Pattern 2: If there are numbered lists (thought process), get text after them
-        elif any(marker in counselor_response for marker in ["1.", "2.", "3.", "4."]):
-            # Split by common transition phrases
-            for phrase in [
-                "Counselor:\n",
-                "\nCounselor:",
-                "**Counselor:**",
-                "Response:",
-                "\n\n"
-            ]:
-                if phrase in counselor_response:
-                    parts = counselor_response.split(phrase)
-                    # Get the last substantial part
-                    for part in reversed(parts):
-                        if len(part.strip()) > 50:  # Actual response is usually longer
-                            counselor_response = part.strip()
-                            break
-                    break
-        
-        # Clean up any remaining formatting
-        counselor_response = counselor_response.strip()
-        
-        # Remove any leading asterisks or markdown
-        counselor_response = counselor_response.lstrip('*').strip()
-        
-        # Update conversation history
+        # Update conversation history (only with the final answer, not the thinking)
         conversations[request.session_id].append(f"User: {request.message}")
         conversations[request.session_id].append(f"Counselor: {counselor_response}")
         
@@ -201,10 +192,12 @@ Counselor's thought process:"""
         if len(conversations[request.session_id]) > 20:
             conversations[request.session_id] = conversations[request.session_id][-20:]
         
-        return ChatResponse(
-            response=counselor_response if api_key else "work in progress",
-            session_id=request.session_id
-        )
+        # Return only the ANSWER (PLAN was used internally to generate better response)
+        return {
+            "task": "ANSWER",
+            "prompt": counselor_response,
+            "session_id": request.session_id
+        }
         
     except Exception as e:
         # Print full traceback for debugging

@@ -117,12 +117,17 @@ async function sendMessage() {
         // Hide typing indicator
         setTyping(false);
 
-        // Add counselor response
-        addMessage('counselor', data.response);
+        // Backend handles chain-of-thought internally and returns only the final ANSWER
+        if (data.task === "ANSWER") {
+            addMessage('counselor', data.prompt);
+        } else {
+            // Fallback for any other response type
+            addMessage('counselor', data.prompt || 'Sorry, I encountered an error. Please try again.');
+        }
 
     } catch (error) {
         setTyping(false);
-        addMessage('counselor', error);
+        addMessage('counselor', 'Sorry, I encountered an error. Please try again.');
         console.error('Error:', error);
     }
 
