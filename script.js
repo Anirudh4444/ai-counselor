@@ -97,7 +97,7 @@ async function sendMessage() {
     setTyping(true);
 
     try {
-        const response = await fetch('http://localhost:8000/chat', {
+        const response = await fetch('/chat', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -136,7 +136,7 @@ async function resetConversation() {
     }
 
     try {
-        await fetch('http://localhost:8000/reset', {
+        await fetch('/reset', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

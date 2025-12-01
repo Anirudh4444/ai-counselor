@@ -1,2 +1,11 @@
-build:
-  - pip install -r requirements.txt
+services:
+  - type: web
+    name: ai-counselor
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python app.py
+    envVars:
+      - key: GOOGLE_API_KEY
+        sync: false  # This means you'll set it manually in Render dashboard
+      - key: PORT
+        value: 8000

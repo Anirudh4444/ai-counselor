@@ -5,6 +5,11 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from google import genai
 import os
+import traceback
+from dotenv import load_dotenv
+
+# Load environment variables from .env file (for local development)
+load_dotenv()
 
 app = FastAPI(title="AI Counselor API", version="1.0.0")
 
@@ -17,8 +22,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Get API key
+# Get API key from environment variable
 api_key = os.environ.get("GOOGLE_API_KEY")
+if not api_key:
+    raise ValueError(
+        "GOOGLE_API_KEY environment variable is not set. "
+        "Please set it in your .env file or environment variables."
+    )
 client = genai.Client(api_key=api_key)
 
 # System prompt and few-shot examples
@@ -197,7 +207,12 @@ Counselor's thought process:"""
         )
         
     except Exception as e:
-        print(e)
+        # Print full traceback for debugging
+        print("\n" + "="*60)
+        print("ERROR in /chat endpoint:")
+        print("="*60)
+        traceback.print_exc()
+        print("="*60 + "\n")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reset")
