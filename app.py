@@ -156,7 +156,17 @@ Provide your internal thought process in a clear, structured way:"""
             }
         )
         
-        thinking_process = plan_response.text.strip()
+        # Validate response
+        if plan_response is None or not hasattr(plan_response, 'text') or plan_response.text is None:
+            print("Warning: PLAN response is None or invalid")
+            print(f"plan_response type: {type(plan_response)}")
+            print(f"plan_response value: {plan_response}")
+            if plan_response is not None:
+                print(f"plan_response attributes: {dir(plan_response)}")
+            thinking_process = "Unable to generate thinking process."
+        else:
+            thinking_process = plan_response.text.strip()
+            print(f"✓ PLAN generated successfully ({len(thinking_process)} chars)")
         
         # Step 2: Generate ANSWER (final response)
         answer_prompt = f"""{SYSTEM_PROMPT}
@@ -182,7 +192,17 @@ Based on your analysis above, provide ONLY your compassionate counselor response
             }
         )
         
-        counselor_response = answer_response.text.strip()
+        # Validate response
+        if answer_response is None or not hasattr(answer_response, 'text') or answer_response.text is None:
+            print("Error: ANSWER response is None or invalid")
+            print(f"answer_response type: {type(answer_response)}")
+            print(f"answer_response value: {answer_response}")
+            if answer_response is not None:
+                print(f"answer_response attributes: {dir(answer_response)}")
+            counselor_response = "I apologize, but I'm having trouble generating a response right now. Please try again in a moment."
+        else:
+            counselor_response = answer_response.text.strip()
+            print(f"✓ ANSWER generated successfully ({len(counselor_response)} chars)")
         
         # Update conversation history (only with the final answer, not the thinking)
         conversations[request.session_id].append(f"User: {request.message}")
