@@ -1,8 +1,13 @@
 from google import genai
 import os
 
-# Get API key from environment or use hardcoded (environment is more secure)
-api_key = os.environ.get("GOOGLE_API_KEY", "AIzaSyAbG9DmKFSc-4oWI3yrXS557JyigXSN2pU")
+# Get API key from environment variable (REQUIRED for security)
+api_key = os.environ.get("GOOGLE_API_KEY")
+if not api_key:
+    raise ValueError(
+        "GOOGLE_API_KEY environment variable is not set. "
+        "Please set it in your .env file or environment variables."
+    )
 client = genai.Client(api_key=api_key)
 
 # System prompt with counselor role and chain-of-thought instructions
