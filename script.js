@@ -1,173 +1,252 @@
-// Generate unique session ID
-const sessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+// Chat Application Logic
 
-// DOM elements
-const welcomeMessage = document.getElementById('welcomeMessage');
-const messagesContainer = document.getElementById('messages');
-const userInput = document.getElementById('userInput');
+// Constants
+const API_BASE_URL = '/api';
+
+// State
+let currentUser = null;
+let currentSessionId = null;
+let isTyping = false;
+
+// DOM Elements
+const messageInput = document.getElementById('messageInput');
 const sendButton = document.getElementById('sendButton');
+const messagesContainer = document.getElementById('messagesContainer');
 const typingIndicator = document.getElementById('typingIndicator');
-const charCount = document.getElementById('charCount');
+const userProfile = document.getElementById('userProfile');
+const userDropdown = document.getElementById('userDropdown');
+const logoutBtn = document.getElementById('logoutBtn');
+const endSessionBtn = document.getElementById('endSessionBtn');
+const sessionModal = document.getElementById('sessionModal');
+const closeModalBtn = document.querySelector('.close-modal');
+const closeSessionBtn = document.getElementById('closeSessionBtn');
+const summaryContent = document.getElementById('summaryContent');
+const welcomeMessage = document.getElementById('welcomeMessage');
+const sessionContext = document.getElementById('sessionContext');
+const contextContent = document.getElementById('contextContent');
 
-// Auto-resize textarea
-userInput.addEventListener('input', function () {
-    this.style.height = 'auto';
-    this.style.height = this.scrollHeight + 'px';
+// Initialize
+document.addEventListener('DOMContentLoaded', () => {
+    checkAuth();
+    setupEventListeners();
+    loadSessionContext();
 
-    // Update character count
-    charCount.textContent = this.value.length;
-
-    // Enable/disable send button
-    sendButton.disabled = this.value.trim().length === 0;
-});
-
-// Send message on Enter (Shift+Enter for new line)
-userInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        sendMessage();
+    // Generate new session ID if not exists
+    if (!currentSessionId) {
+        currentSessionId = generateUUID();
     }
 });
 
-// Start chat
-function startChat() {
-    welcomeMessage.style.display = 'none';
-    addMessage('counselor', "Hello! I'm here to listen and support you. What's on your mind today?");
-    userInput.focus();
+// Authentication Check
+function checkAuth() {
+    const token = localStorage.getItem('token');
+    const username = localStorage.getItem('username');
+
+    if (!token || !username) {
+        window.location.href = '/login';
+        return;
+    }
+
+    currentUser = { username, token };
+    updateUserProfile(username);
 }
 
-// Add message to chat
-function addMessage(sender, text) {
-    const messageDiv = document.createElement('div');
-    messageDiv.className = `message ${sender}`;
-
-    const avatar = document.createElement('div');
-    avatar.className = 'message-avatar';
-    avatar.textContent = sender === 'counselor' ? '💙' : '👤';
-
-    const content = document.createElement('div');
-    content.className = 'message-content';
-    content.textContent = text;
-
-    messageDiv.appendChild(avatar);
-    messageDiv.appendChild(content);
-
-    messagesContainer.appendChild(messageDiv);
-
-    // Scroll to bottom smoothly
-    setTimeout(() => {
-        messagesContainer.parentElement.scrollTo({
-            top: messagesContainer.parentElement.scrollHeight,
-            behavior: 'smooth'
-        });
-    }, 100);
+function updateUserProfile(username) {
+    document.getElementById('displayUsername').textContent = username;
+    document.getElementById('userInitial').textContent = username.charAt(0).toUpperCase();
+    document.getElementById('welcomeName').textContent = username;
 }
 
-// Show/hide typing indicator
-function setTyping(isTyping) {
-    if (isTyping) {
-        typingIndicator.classList.add('active');
-        setTimeout(() => {
-            messagesContainer.parentElement.scrollTo({
-                top: messagesContainer.parentElement.scrollHeight,
-                behavior: 'smooth'
-            });
-        }, 100);
-    } else {
-        typingIndicator.classList.remove('active');
+// Event Listeners
+function setupEventListeners() {
+    // Message Input
+    messageInput.addEventListener('input', autoResizeTextarea);
+    messageInput.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+
+    sendButton.addEventListener('click', sendMessage);
+
+    // User Dropdown
+    userProfile.addEventListener('click', (e) => {
+        e.stopPropagation();
+        userDropdown.classList.toggle('show');
+    });
+
+    document.addEventListener('click', (e) => {
+        if (!userProfile.contains(e.target)) {
+            userDropdown.classList.remove('show');
+        }
+    });
+
+    // Session Management
+    logoutBtn.addEventListener('click', handleLogout);
+    endSessionBtn.addEventListener('click', confirmEndSession);
+
+    // Modal
+    closeModalBtn.addEventListener('click', () => sessionModal.classList.remove('show'));
+    closeSessionBtn.addEventListener('click', () => {
+        sessionModal.classList.remove('show');
+        window.location.reload(); // Start fresh session
+    });
+}
+
+// Session Context
+function loadSessionContext() {
+    const recentSummaries = localStorage.getItem('recent_summaries');
+    if (recentSummaries) {
+        try {
+            const summaries = JSON.parse(recentSummaries);
+            if (summaries && summaries.length > 0) {
+                const lastSummary = summaries[0].summary;
+                contextContent.textContent = lastSummary;
+                sessionContext.style.display = 'block';
+                welcomeMessage.style.display = 'none'; // Hide welcome if context exists
+            }
+        } catch (e) {
+            console.error('Error parsing summaries:', e);
+        }
     }
 }
 
-// Send message to backend
+// Message Handling
 async function sendMessage() {
-    const message = userInput.value.trim();
-
-    if (!message) return;
+    const content = messageInput.value.trim();
+    if (!content || isTyping) return;
 
     // Add user message
-    addMessage('user', message);
+    addMessage(content, 'user');
+    messageInput.value = '';
+    autoResizeTextarea();
 
-    // Clear input
-    userInput.value = '';
-    userInput.style.height = 'auto';
-    charCount.textContent = '0';
-    sendButton.disabled = true;
+    // Hide welcome/context
+    welcomeMessage.style.display = 'none';
+    sessionContext.style.display = 'none';
 
     // Show typing indicator
-    setTyping(true);
+    showTyping(true);
 
     try {
-        const response = await fetch('/chat', {
+        const response = await fetch(`${API_BASE_URL}/chat`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${currentUser.token}`
             },
             body: JSON.stringify({
-                message: message,
-                session_id: sessionId
+                message: content,
+                session_id: currentSessionId
             })
         });
 
-        if (!response.ok) {
-            throw new Error('Network response was not ok');
+        if (response.status === 401) {
+            handleLogout();
+            return;
         }
 
         const data = await response.json();
 
-        // Hide typing indicator
-        setTyping(false);
+        // Add AI response
+        addMessage(data.prompt, 'counselor');
 
-        // Backend handles chain-of-thought internally and returns only the final ANSWER
-        if (data.task === "ANSWER") {
-            addMessage('counselor', data.prompt);
-        } else {
-            // Fallback for any other response type
-            addMessage('counselor', data.prompt || 'Sorry, I encountered an error. Please try again.');
+        // Check for session end triggers
+        if (content.toLowerCase().match(/\b(bye|goodbye|see you|end session)\b/)) {
+            setTimeout(() => confirmEndSession(), 2000);
         }
 
     } catch (error) {
-        setTyping(false);
-        addMessage('counselor', 'Sorry, I encountered an error. Please try again.');
         console.error('Error:', error);
+        addMessage("I'm having trouble connecting right now. Please check your connection and try again.", 'counselor');
+    } finally {
+        showTyping(false);
     }
-
-    userInput.focus();
 }
 
-// Reset conversation
-async function resetConversation() {
-    if (!confirm('Are you sure you want to start a new conversation? This will clear the current chat history.')) {
-        return;
-    }
+function addMessage(content, role) {
+    const messageDiv = document.createElement('div');
+    messageDiv.className = `message ${role}`;
 
+    // Process markdown-like formatting (simple version)
+    const formattedContent = content
+        .replace(/\n/g, '<br>')
+        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+        .replace(/\*(.*?)\*/g, '<em>$1</em>');
+
+    messageDiv.innerHTML = formattedContent;
+
+    messagesContainer.appendChild(messageDiv);
+    scrollToBottom();
+}
+
+function showTyping(show) {
+    isTyping = show;
+    if (show) {
+        typingIndicator.classList.add('active');
+        messagesContainer.appendChild(typingIndicator);
+        scrollToBottom();
+    } else {
+        typingIndicator.classList.remove('active');
+        typingIndicator.remove();
+    }
+}
+
+function scrollToBottom() {
+    messagesContainer.scrollTop = messagesContainer.scrollHeight;
+}
+
+function autoResizeTextarea() {
+    messageInput.style.height = 'auto';
+    messageInput.style.height = messageInput.scrollHeight + 'px';
+}
+
+// Session Management
+async function confirmEndSession() {
+    if (confirm("Are you sure you want to end this session? I'll create a summary for next time.")) {
+        await endSession();
+    }
+}
+
+async function endSession() {
     try {
-        await fetch('/reset', {
+        const response = await fetch(`${API_BASE_URL}/session/end`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
+                'Authorization': `Bearer ${currentUser.token}`
             },
             body: JSON.stringify({
-                session_id: sessionId
+                session_id: currentSessionId
             })
         });
+
+        const data = await response.json();
+
+        // Show summary modal
+        summaryContent.textContent = data.summary;
+        sessionModal.classList.add('show');
+
+        // Clear current session ID
+        currentSessionId = null;
+
     } catch (error) {
-        console.error('Error resetting conversation:', error);
+        console.error('Error ending session:', error);
     }
-
-    // Clear messages
-    messagesContainer.innerHTML = '';
-
-    // Show welcome message
-    welcomeMessage.style.display = 'block';
-
-    // Reset input
-    userInput.value = '';
-    userInput.style.height = 'auto';
-    charCount.textContent = '0';
-    sendButton.disabled = true;
 }
 
-// Focus input on load
-window.addEventListener('load', () => {
-    userInput.focus();
-});
+function handleLogout() {
+    localStorage.removeItem('token');
+    localStorage.removeItem('username');
+    localStorage.removeItem('recent_summaries');
+    window.location.href = '/login';
+}
+
+// Utilities
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function (c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}

@@ -1,12 +1,32 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, EmailStr
+from typing import Optional
 from google import genai
 import os
 import traceback
 from dotenv import load_dotenv
+from datetime import datetime, timedelta
+import uuid
+
+# Import authentication and database modules
+from auth import (
+    get_password_hash,
+    authenticate_user,
+    create_access_token,
+    get_current_user
+)
+from db_config import users_collection
+from vector_db import (
+    store_chat_message,
+    retrieve_relevant_history,
+    get_session_history,
+    create_session_summary,
+    get_recent_summaries,
+    generate_summary_from_messages
+)
 
 # Load environment variables from .env file (for local development)
 load_dotenv()
@@ -23,7 +43,7 @@ app.add_middleware(
 )
 
 # Get API key from environment variable
-api_key = os.environ.get("GOOGLE_API_KEY")
+api_key = "AIzaSyDe31S3jhYpkW3HyJimbVGQe-GKgxQv-Fs"
 if not api_key:
     raise ValueError(
         "GOOGLE_API_KEY environment variable is not set. "
@@ -108,55 +128,36 @@ Counselor's thought process:
 
 Counselor: "Relationship conflicts, especially recurring ones, can be really exhausting and lonely. It sounds like you're feeling unheard, which is painful. I'm curious - when you say they don't understand how you feel, have you been able to express your feelings using 'I' statements? For example, instead of 'You always...' trying 'I feel... when... because...' This can help your partner hear your feelings without becoming defensive. Also, it might help to ask yourself: what need of mine isn't being met? Is it connection, respect, support, or something else? Understanding this can help you communicate more clearly. Would you be willing to tell me about one of these recurring conflicts so we can explore it together?"
 
-Example 6:
-User: "It's been six months since my mom passed away and I still cry every day. People say I should be moving on by now."
-
-Counselor's thought process:
-- Feeling: Grief, sadness, pressure from others, possibly guilt
-- Underlying issue: Normal grief process being invalidated by others
-- Need: Permission to grieve, normalization of timeline, validation
-- Response approach: Strongly validate grief, educate about grief process, challenge "should"
-
-Counselor: "I'm so sorry for the loss of your mom. What you're experiencing is completely normal and valid. There's no timeline for grief, and anyone who suggests you 'should' be over it by six months doesn't understand how grief works. Grief isn't linear - it comes in waves, and six months is still very recent. Crying every day is your heart processing an enormous loss. Some people grieve intensely for years, and that's okay. What matters is that you're allowing yourself to feel. Grief is love with nowhere to go, and the depth of your pain reflects the depth of your love for your mom. How are you taking care of yourself during this time? And do you have people in your life who allow you to grieve without judgment?"
-
-Example 7:
-User: "I look in the mirror and hate what I see. I feel ugly and worthless compared to everyone else."
-
-Counselor's thought process:
-- Feeling: Low self-esteem, self-hatred, comparison, body image issues
-- Underlying issue: Negative self-perception, possibly influenced by social media/society
-- Need: Compassionate challenge to distorted thinking, self-worth beyond appearance
-- Response approach: Validate pain, challenge comparison, explore self-worth sources
-
-Counselor: "Thank you for trusting me with something so painful. The relationship we have with ourselves can be the hardest one, and I hear how much you're struggling right now. I want to ask you something: if a friend came to you and said they felt ugly and worthless, what would you say to them? Often we're much kinder to others than to ourselves. Comparison is a trap - we compare our behind-the-scenes to everyone else's highlight reel, especially on social media. But here's the truth: your worth has nothing to do with how you look. Your worth is inherent - it exists because you exist. What are some things about yourself that have nothing to do with appearance? What do you value in others - is it really just how they look, or is it their kindness, humor, intelligence, creativity?"
-
-Example 8:
-User: "I have so much to do and I can't focus on anything. My mind keeps racing and I'm getting nothing done."
-
-Counselor's thought process:
-- Feeling: Overwhelmed, scattered, anxious, possibly paralyzed by stress
-- Underlying issue: Cognitive overload, possible anxiety, lack of prioritization
-- Need: Grounding, practical strategies, validation of difficulty
-- Response approach: Validate, provide concrete stress management tools, break down tasks
-
-Counselor: "What you're describing is a really common response to stress and overwhelm - when we have too much to do, our brain can go into overdrive and actually make it harder to do anything. It's like having too many browser tabs open. First, take a breath with me. Let's try to calm your nervous system. Can you name three things you can see right now? Good. Now, let's make this manageable. Instead of looking at everything at once, can you identify just ONE thing that absolutely must get done today? Just one. We're going to ignore everything else for now. Once you have that one thing, break it into the smallest possible first step - something you can do in 5 minutes. Sometimes we just need to build momentum. Also, your racing mind might benefit from a 'brain dump' - write down everything you're worried about, just to get it out of your head. Does this feel doable?"
 """
 
 # Store conversation history per session
 conversations = {}
 
 # Request/Response models
+class SignupRequest(BaseModel):
+    username: str
+    email: EmailStr
+    password: str
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
 class ChatRequest(BaseModel):
     message: str
-    session_id: str = "default"
+    session_id: Optional[str] = None
 
 class ChatResponse(BaseModel):
     task: str  # "PLAN" or "ANSWER"
     prompt: str
     session_id: str
+    context: Optional[str] = None
 
 class ResetRequest(BaseModel):
     session_id: str = "default"
+
+class EndSessionRequest(BaseModel):
+    session_id: str
 
 from pathlib import Path
 
@@ -175,22 +176,179 @@ async def get_styles():
 async def get_script():
     return FileResponse(BASE_DIR / "script.js")
 
-@app.post("/chat")
-async def chat(request: ChatRequest):
+@app.get("/login")
+async def login_page():
+    return FileResponse(BASE_DIR / "login.html")
+
+@app.get("/signup")
+async def signup_page():
+    return FileResponse(BASE_DIR / "signup.html")
+
+@app.get("/auth.js")
+async def get_auth_script():
+    return FileResponse(BASE_DIR / "auth.js")
+
+@app.get("/auth_styles.css")
+async def get_auth_styles():
+    return FileResponse(BASE_DIR / "auth_styles.css")
+
+# Authentication endpoints
+@app.post("/api/signup")
+async def signup(request: SignupRequest):
+    """Register a new user"""
+    try:
+        # Check if user already exists
+        existing_user = users_collection.find_one({"username": request.username})
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Username already exists")
+        
+        existing_email = users_collection.find_one({"email": request.email})
+        if existing_email:
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Hash password
+        hashed_password = get_password_hash(request.password)
+        
+        # Create user document
+        user_doc = {
+            "username": request.username,
+            "email": request.email,
+            "hashed_password": hashed_password,
+            "created_at": datetime.utcnow(),
+            "last_login": None
+        }
+        
+        # Insert into database
+        result = users_collection.insert_one(user_doc)
+        user_id = str(result.inserted_id)
+        
+        # Create access token
+        access_token = create_access_token(
+            data={"sub": request.username, "user_id": user_id}
+        )
+        
+        return {
+            "message": "User created successfully",
+            "access_token": access_token,
+            "token_type": "bearer",
+            "username": request.username
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/login")
+async def login(request: LoginRequest):
+    """Login user and return JWT token"""
+    try:
+        # Authenticate user
+        user = authenticate_user(request.username, request.password)
+        
+        if not user:
+            raise HTTPException(
+                status_code=401,
+                detail="Incorrect username or password"
+            )
+        
+        # Update last login
+        users_collection.update_one(
+            {"username": request.username},
+            {"$set": {"last_login": datetime.utcnow()}}
+        )
+        
+        # Create access token
+        user_id = str(user["_id"])
+        access_token = create_access_token(
+            data={"sub": request.username, "user_id": user_id}
+        )
+        
+        # Get recent summaries for context
+        recent_summaries = get_recent_summaries(user_id, limit=2)
+        
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "username": request.username,
+            "recent_summaries": recent_summaries
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat")
+async def chat(request: ChatRequest, current_user: dict = Depends(get_current_user)):
+    """Chat endpoint with authentication and vector database integration"""
     try:
         if not request.message:
             raise HTTPException(status_code=400, detail="No message provided")
         
-        # Get or create conversation history
-        if request.session_id not in conversations:
-            conversations[request.session_id] = []
+        user_id = current_user["_id"]
+        username = current_user["username"]
         
-        conversation_history = "\n".join(conversations[request.session_id])
+        # Generate or use provided session ID
+        session_id = request.session_id if request.session_id else str(uuid.uuid4())
+        
+        # Get or create conversation history for this session
+        if session_id not in conversations:
+            conversations[session_id] = []
+            
+            # Retrieve relevant past context using vector search
+            relevant_history = retrieve_relevant_history(
+                user_id=user_id,
+                current_message=request.message,
+                limit=3,
+                similarity_threshold=0.7
+            )
+            # print("relevant_history1",relevant_history)
+            
+            # Get recent session summaries for context
+            recent_summaries = get_recent_summaries(user_id, limit=2)
+            # print("recent_summaries",recent_summaries)
+            
+            # Build context string
+            context_parts = []
+            
+            if recent_summaries:
+                context_parts.append("Previous session summaries:")
+                for summary in recent_summaries:
+                    context_parts.append(f"- {summary.get('summary', '')}")
+            
+            if relevant_history:
+                context_parts.append("\nRelevant past conversations:")
+                for item in relevant_history:
+                    msg = item.get('message', {})
+                    # Handle both 'content' (old) and 'contents' (new) for backward compatibility
+                    message_text = msg.get('contents') or msg.get('content', '')
+                    context_parts.append(f"- {msg.get('role', '').title()}: {message_text}")
+            
+            context = "\n".join(context_parts) if context_parts else ""
+            if context:
+                print(f"\n{'='*60}")
+                print("CONTEXT RETRIEVED FOR NEW SESSION:")
+                print(f"{'='*60}")
+                print(context)
+                print(f"{'='*60}\n")
+            else:
+                print("\n⚠️  No context retrieved - check if embeddings are being generated\n")
+        else:
+            context = ""
+        
+        conversation_history = "\n".join(conversations[session_id])
         
         # Step 1: Generate PLAN (thinking process)
+        context_section = f"Context from previous sessions:\n{context}" if context else ""
+        
         plan_prompt = f"""{SYSTEM_PROMPT}
 
 {FEW_SHOT_EXAMPLES}
+
+{context_section}
 
 {conversation_history}
 
@@ -210,26 +368,22 @@ Provide your internal thought process in a clear, structured way:"""
             contents=plan_prompt,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 512,
+                "max_output_tokens": 1024,
             }
         )
         
         # Validate response
         if plan_response is None or not hasattr(plan_response, 'text') or plan_response.text is None:
-            print("Warning: PLAN response is None or invalid")
-            print(f"plan_response type: {type(plan_response)}")
-            print(f"plan_response value: {plan_response}")
-            if plan_response is not None:
-                print(f"plan_response attributes: {dir(plan_response)}")
             thinking_process = "Unable to generate thinking process."
         else:
             thinking_process = plan_response.text.strip()
-            print(f"✓ PLAN generated successfully ({len(thinking_process)} chars)")
         
         # Step 2: Generate ANSWER (final response)
         answer_prompt = f"""{SYSTEM_PROMPT}
 
 {FEW_SHOT_EXAMPLES}
+
+{context_section}
 
 {conversation_history}
 
@@ -246,37 +400,45 @@ Based on your analysis above, provide ONLY your compassionate counselor response
             contents=answer_prompt,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 1024,  # ~200 words limit
             }
         )
         
         # Validate response
         if answer_response is None or not hasattr(answer_response, 'text') or answer_response.text is None:
-            print("Error: ANSWER response is None or invalid")
-            print(f"answer_response type: {type(answer_response)}")
-            print(f"answer_response value: {answer_response}")
-            if answer_response is not None:
-                print(f"answer_response attributes: {dir(answer_response)}")
             counselor_response = "I apologize, but I'm having trouble generating a response right now. Please try again in a moment."
         else:
             counselor_response = answer_response.text.strip()
-            print(f"✓ ANSWER generated successfully ({len(counselor_response)} chars)")
         
-        # Update conversation history (only with the final answer, not the thinking)
-        conversations[request.session_id].append(f"User: {request.message}")
-        conversations[request.session_id].append(f"Counselor: {counselor_response}")
+        # Store messages in vector database
+        store_chat_message(user_id, session_id, "user", request.message)
+        store_chat_message(user_id, session_id, "counselor", counselor_response)
+        
+        # Update in-memory conversation history
+        conversations[session_id].append(f"User: {request.message}")
+        conversations[session_id].append(f"Counselor: {counselor_response}")
         
         # Keep only last 10 exchanges to avoid token limits
-        if len(conversations[request.session_id]) > 20:
-            conversations[request.session_id] = conversations[request.session_id][-20:]
+        if len(conversations[session_id]) > 20:
+            conversations[session_id] = conversations[session_id][-20:]
+        data= {
+            "task": "ANSWER",
+            "prompt": counselor_response,
+            "session_id": session_id,
+            "context": context if context else None
+        }
+        # print("data1",data)    
         
-        # Return only the ANSWER (PLAN was used internally to generate better response)
+        # Return response
         return {
             "task": "ANSWER",
             "prompt": counselor_response,
-            "session_id": request.session_id
+            "session_id": session_id,
+            "context": context if context else None
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         # Print full traceback for debugging
         print("\n" + "="*60)
@@ -284,6 +446,51 @@ Based on your analysis above, provide ONLY your compassionate counselor response
         print("="*60)
         traceback.print_exc()
         print("="*60 + "\n")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/session/end")
+async def end_session(request: EndSessionRequest, current_user: dict = Depends(get_current_user)):
+    """End a session and create a summary"""
+    try:
+        user_id = current_user["_id"]
+        session_id = request.session_id
+        
+        # Get session history from database
+        session = get_session_history(user_id, session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+        
+        messages = session.get("messages", [])
+        
+        if len(messages) == 0:
+            return {"message": "No messages to summarize"}
+        
+        print(f"\n{'='*60}")
+        print(f"ENDING SESSION: {session_id}")
+        print(f"Message count: {len(messages)}")
+        print(f"First message sample: {messages[0] if messages else 'None'}")
+        print(f"{'='*60}\n")
+        
+        # Generate summary
+        summary_text = generate_summary_from_messages(messages)
+        
+        # Store summary in database
+        create_session_summary(user_id, session_id, summary_text)
+        
+        # Clear in-memory conversation
+        if session_id in conversations:
+            del conversations[session_id]
+        
+        return {
+            "message": "Session ended successfully",
+            "summary": summary_text
+        }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/reset")
