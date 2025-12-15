@@ -11,7 +11,7 @@ import numpy as np
 load_dotenv()
 
 # Initialize Gemini client for embeddings
-api_key = "AIzaSyDe31S3jhYpkW3HyJimbVGQe-GKgxQv-Fs"
+api_key = os.environ.get("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY environment variable is not set")
 

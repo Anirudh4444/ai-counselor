@@ -10,6 +10,7 @@ load_dotenv()
 
 # Get MongoDB URI from environment
 MONGODB_URI = os.environ.get("MONGODB_URI")
+print()
 
 if not MONGODB_URI:
     raise ValueError(
@@ -17,13 +18,15 @@ if not MONGODB_URI:
         "Please set it in your .env file."
     )
 
-# Create MongoDB client with standard configuration
+# Create MongoDB client with SSL configuration
 try:
-    # Standard MongoDB connection - works well with Python 3.11
+    # MongoDB connection with SSL/TLS configuration
     client = MongoClient(
         MONGODB_URI,
         server_api=ServerApi('1'),
-        serverSelectionTimeoutMS=10000
+        serverSelectionTimeoutMS=10000,
+        tlsCAFile=certifi.where(),  # Use certifi's certificate bundle
+        tls=True
     )
     
     # Test connection
@@ -43,6 +46,7 @@ try:
 except Exception as e:
     print(f"✗ MongoDB connection failed: {e}")
     print("⚠️  Server will start without database functionality")
+    print("MONGODB_URI: ", MONGODB_URI)
     
     # Set collections to None to allow server to start
     client = None
