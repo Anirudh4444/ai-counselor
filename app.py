@@ -402,7 +402,8 @@ Based on your analysis above, provide ONLY your compassionate counselor response
             contents=answer_prompt,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 1024,  # ~200 words limit
+                "max_output_tokens": 2048,  # Increased to ensure complete responses
+                "stop_sequences": None,  # Allow natural completion
             }
         )
         
