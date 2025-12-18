@@ -11,7 +11,7 @@ import numpy as np
 load_dotenv()
 
 # Initialize Gemini client for embeddings
-api_key = "AIzaSyDe31S3jhYpkW3HyJimbVGQe-GKgxQv-Fs"
+api_key = os.environ.get("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError("GOOGLE_API_KEY environment variable is not set")
 
@@ -98,7 +98,7 @@ def store_chat_message(
             )
             chat_history_collection.insert_one(chat_history.dict(by_alias=True, exclude={"id"}))
         
-        print(f"✓ Stored message for user {user_id} in session {session_id}")
+        print(f"[OK] Stored message for user {user_id} in session {session_id}")
     except Exception as e:
         print(f"Error storing chat message: {e}")
 
@@ -143,7 +143,7 @@ def retrieve_relevant_history(
         
         # Sort by similarity and return top results
         relevant_messages.sort(key=lambda x: x["similarity"], reverse=True)
-        # Debug: print(f"Found {len(relevant_messages)} relevant messages")
+        print(f"Found {len(relevant_messages)} relevant messages")
         return relevant_messages[:limit]
     
     except Exception as e:
@@ -195,7 +195,7 @@ def create_session_summary(
         
         # Store in database
         session_summary_collection.insert_one(summary.dict(by_alias=True, exclude={"id"}))
-        print(f"✓ Created session summary for user {user_id}")
+        print(f"[OK] Created session summary for user {user_id}")
     
     except Exception as e:
         print(f"Error creating session summary: {e}")
@@ -219,8 +219,22 @@ def get_recent_summaries(user_id: str, limit: int = 3) -> List[Dict]:
         return []
 
 
+def delete_user_history(user_id: str) -> None:
+    """Delete all chat history and summaries for a user"""
+    try:
+        # Delete chat history
+        chat_history_collection.delete_many({"user_id": user_id})
+        
+        # Delete session summaries
+        session_summary_collection.delete_many({"user_id": user_id})
+        
+        print(f"[OK] Deleted all history for user {user_id}")
+    except Exception as e:
+        print(f"Error deleting user history: {e}")
+
+
 def generate_summary_from_messages(messages: List[Dict]) -> str:
-    """Generate a summary of the conversation using Gemini"""
+    """Generate a structured JSON summary of the conversation using Gemini"""
     try:
         # Prepare conversation text with backward compatibility
         conversation_lines = []
@@ -234,43 +248,62 @@ def generate_summary_from_messages(messages: List[Dict]) -> str:
         
         # Validate we have actual content to summarize
         if not conversation or len(conversation.strip()) < 10:
-            print("⚠️  Not enough content to generate meaningful summary")
-            return "Brief conversation session completed."
+            print("[WARNING] Not enough content to generate meaningful summary")
+            return json.dumps({
+                "persons_involved": "User and Counselor",
+                "emotional_state": "Brief interaction",
+                "user_state": "Neutral",
+                "ai_advice": "None",
+                "improvement_from_last": "N/A",
+                "positive_things": "N/A",
+                "negative_things": "N/A",
+                "user_trauma": "None"
+            })
         
         print(f"\n{'='*60}")
-        print("GENERATING SUMMARY FROM CONVERSATION:")
+        print("GENERATING STRUCTURED SUMMARY FROM CONVERSATION:")
         print(f"{'='*60}")
         print(f"Message count: {len(conversation_lines)}")
-        print(f"Conversation preview: {conversation[:200]}...")
         print(f"{'='*60}\n")
         
-        # Create summary prompt - simplified to reduce token usage
-        prompt = f"""Summarize this mental health counseling conversation in 3-4 sentences. Include: the main issue, people involved (with names), emotions expressed, and any advice given.
+        # Create structured summary prompt
+        prompt = f"""Analyze this mental health counseling conversation and provide a structured summary in JSON format.
+        
+        Output format (JSON only):
+        {{
+            "persons_involved": "Names and relationships mentioned",
+            "emotional_state": "1-2 lines describing user's feelings",
+            "user_state": "Current mental state (e.g., Anxious, Calm, Distressed)",
+            "ai_advice": "Key advice or exercises suggested",
+            "improvement_from_last": "Any progress noted (or 'First session' if unknown)",
+            "positive_things": "Positive aspects or strengths shown by user",
+            "negative_things": "Main concerns or struggles",
+            "user_trauma": "Any trauma disclosed (or 'None')"
+        }}
 
-Conversation:
-{conversation}
-
-Summary:"""
+        Conversation:
+        {conversation}
+        """
         
         # Generate summary using Gemini
         response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=prompt,
             config={
-                "temperature": 0.5,
+                "temperature": 0.3,
                 "max_output_tokens": 1024,
+                "response_mime_type": "application/json"
             }
         )
-        print("response",response)
         
         if response and hasattr(response, 'text') and response.text:
             summary = response.text.strip()
-            print(f"✓ Generated summary: {summary}\n")
+            print(f"[OK] Generated structured summary\n")
             return summary
         else:
-            return "Session completed with discussion of mental health concerns."
+            return json.dumps({"error": "Failed to generate summary"})
     
     except Exception as e:
         print(f"Error generating summary: {e}")
-        return "Session completed."
+        return json.dumps({"error": str(e)})
 

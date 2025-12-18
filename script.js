@@ -24,12 +24,13 @@ const summaryContent = document.getElementById('summaryContent');
 const welcomeMessage = document.getElementById('welcomeMessage');
 const sessionContext = document.getElementById('sessionContext');
 const contextContent = document.getElementById('contextContent');
+const deleteHistoryBtn = document.getElementById('deleteHistoryBtn');
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
     checkAuth();
     setupEventListeners();
-    loadSessionContext();
+    // loadSessionContext(); // Hidden as per user request
 
     // Generate new session ID if not exists
     if (!currentSessionId) {
@@ -85,6 +86,9 @@ function setupEventListeners() {
     // Session Management
     logoutBtn.addEventListener('click', handleLogout);
     endSessionBtn.addEventListener('click', confirmEndSession);
+    if (deleteHistoryBtn) {
+        deleteHistoryBtn.addEventListener('click', handleDeleteHistory);
+    }
 
     // Modal
     closeModalBtn.addEventListener('click', () => sessionModal.classList.remove('show'));
@@ -112,7 +116,35 @@ function loadSessionContext() {
     }
 }
 
-// Message Handling
+// Show thinking animation
+function showThinkingAnimation() {
+    const thinkingDiv = document.createElement('div');
+    thinkingDiv.className = 'message counselor thinking-message';
+    thinkingDiv.id = 'thinkingAnimation';
+    thinkingDiv.innerHTML = `
+        <div class="thinking-content">
+            <span class="thinking-text">Thinking</span>
+            <span class="thinking-dots">
+                <span class="dot-anim">.</span>
+                <span class="dot-anim">.</span>
+                <span class="dot-anim">.</span>
+            </span>
+        </div>
+    `;
+    messagesContainer.appendChild(thinkingDiv);
+    scrollToBottom();
+    return thinkingDiv;
+}
+
+// Remove thinking animation
+function removeThinkingAnimation() {
+    const thinkingEl = document.getElementById('thinkingAnimation');
+    if (thinkingEl) {
+        thinkingEl.remove();
+    }
+}
+
+// Message Handling with Streaming
 async function sendMessage() {
     const content = messageInput.value.trim();
     if (!content || isTyping) return;
@@ -126,11 +158,13 @@ async function sendMessage() {
     welcomeMessage.style.display = 'none';
     sessionContext.style.display = 'none';
 
-    // Show typing indicator
-    showTyping(true);
+    // Show thinking animation
+    isTyping = true;
+    const thinkingEl = showThinkingAnimation();
 
     try {
-        const response = await fetch(`${API_BASE_URL}/chat`, {
+        // Use streaming endpoint
+        const response = await fetch(`${API_BASE_URL}/chat/stream`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -147,21 +181,131 @@ async function sendMessage() {
             return;
         }
 
-        const data = await response.json();
+        if (!response.ok) {
+            throw new Error('Network response was not ok');
+        }
 
-        // Add AI response
-        addMessage(data.prompt, 'counselor');
+        // Create message element for streaming response
+        let aiMessageDiv = null;
+        let wordBuffer = '';
+        let displayedText = '';
+        let wordQueue = [];
+        let isDisplaying = false;
 
-        // Check for session end triggers
-        if (content.toLowerCase().match(/\b(bye|goodbye|see you|end session)\b/)) {
-            setTimeout(() => confirmEndSession(), 2000);
+        // Function to display words one at a time
+        async function displayNextWord() {
+            if (wordQueue.length === 0) {
+                isDisplaying = false;
+                return;
+            }
+
+            isDisplaying = true;
+            const word = wordQueue.shift();
+            displayedText += word;
+
+            if (aiMessageDiv) {
+                // Process markdown-like formatting
+                const formattedContent = displayedText
+                    .replace(/\n/g, '<br>')
+                    .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.*?)\*/g, '<em>$1</em>');
+                aiMessageDiv.innerHTML = formattedContent;
+                scrollToBottom();
+            }
+
+            // Delay between words (adjust for speed - reduced for snappier feel)
+            await new Promise(resolve => setTimeout(resolve, 30));
+            displayNextWord();
+        }
+
+        // Function to add words to queue
+        function queueWords(text) {
+            // Split by spaces but keep the spaces
+            const words = text.split(/(\s+)/);
+            words.forEach(word => {
+                if (word) {
+                    wordQueue.push(word);
+                }
+            });
+
+            // Start displaying if not already
+            if (!isDisplaying) {
+                displayNextWord();
+            }
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+
+            for (const line of lines) {
+                if (line.startsWith('data: ')) {
+                    try {
+                        const data = JSON.parse(line.slice(6));
+
+                        switch (data.type) {
+                            case 'session':
+                                currentSessionId = data.session_id;
+                                break;
+
+                            case 'thinking':
+                                // Update thinking animation if needed
+                                break;
+
+                            case 'start':
+                                // Remove thinking, prepare for response
+                                removeThinkingAnimation();
+                                aiMessageDiv = document.createElement('div');
+                                aiMessageDiv.className = 'message counselor streaming';
+                                messagesContainer.appendChild(aiMessageDiv);
+                                break;
+
+                            case 'chunk':
+                                if (aiMessageDiv && data.content) {
+                                    // Queue words for display
+                                    queueWords(data.content);
+                                }
+                                break;
+
+                            case 'done':
+                                // Wait for all words to be displayed
+                                while (wordQueue.length > 0 || isDisplaying) {
+                                    await new Promise(resolve => setTimeout(resolve, 50));
+                                }
+                                if (aiMessageDiv) {
+                                    aiMessageDiv.classList.remove('streaming');
+                                }
+                                // Check for session end triggers
+                                if (content.toLowerCase().match(/\b(bye|goodbye|see you|end session)\b/)) {
+                                    setTimeout(() => confirmEndSession(), 2000);
+                                }
+                                break;
+
+                            case 'error':
+                                removeThinkingAnimation();
+                                addMessage("I'm having trouble connecting right now. Please try again.", 'counselor');
+                                console.error('Stream error:', data.content);
+                                break;
+                        }
+                    } catch (parseError) {
+                        // Ignore parse errors for incomplete JSON
+                    }
+                }
+            }
         }
 
     } catch (error) {
         console.error('Error:', error);
+        removeThinkingAnimation();
         addMessage("I'm having trouble connecting right now. Please check your connection and try again.", 'counselor');
     } finally {
-        showTyping(false);
+        isTyping = false;
     }
 }
 
@@ -236,11 +380,55 @@ async function endSession() {
     }
 }
 
-function handleLogout() {
-    localStorage.removeItem('token');
-    localStorage.removeItem('username');
-    localStorage.removeItem('recent_summaries');
-    window.location.href = '/login';
+async function handleLogout() {
+    if (confirm('Are you sure you want to sign out?')) {
+        // Auto-save session before logout
+        if (currentSessionId) {
+            try {
+                await fetch(`${API_BASE_URL}/session/end`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${currentUser.token}`
+                    },
+                    body: JSON.stringify({ session_id: currentSessionId })
+                });
+            } catch (error) {
+                console.error('Error saving session on logout:', error);
+            }
+        }
+
+        localStorage.removeItem('token');
+        localStorage.removeItem('username');
+        localStorage.removeItem('recent_summaries');
+        window.location.href = '/login';
+    }
+}
+
+async function handleDeleteHistory() {
+    if (confirm('Are you sure you want to delete ALL chat history? This cannot be undone.')) {
+        try {
+            const response = await fetch(`${API_BASE_URL}/user/delete-history`, {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${currentUser.token}`
+                }
+            });
+
+            if (response.ok) {
+                alert('Chat history deleted successfully.');
+                // Clear local storage and reload to start fresh
+                localStorage.removeItem('recent_summaries');
+                window.location.reload();
+            } else {
+                const data = await response.json();
+                alert(`Error: ${data.detail || 'Failed to delete history'}`);
+            }
+        } catch (error) {
+            console.error('Error deleting history:', error);
+            alert('An error occurred while deleting history.');
+        }
+    }
 }
 
 // Utilities
@@ -250,3 +438,5 @@ function generateUUID() {
         return v.toString(16);
     });
 }
+
+function scrollToBottom() { messagesContainer.scrollTop = messagesContainer.scrollHeight; }

@@ -28,7 +28,7 @@ try:
     
     # Test connection
     client.admin.command('ping')
-    print("✓ Successfully connected to MongoDB!")
+    print("[OK] Successfully connected to MongoDB!")
     
     # Database instance
     db = client.counsellor_db
@@ -41,8 +41,8 @@ try:
     mongodb_available = True
     
 except Exception as e:
-    print(f"✗ MongoDB connection failed: {e}")
-    print("⚠️  Server will start without database functionality")
+    print(f"[ERROR] MongoDB connection failed: {e}")
+    print("[WARNING] Server will start without database functionality")
     
     # Set collections to None to allow server to start
     client = None
@@ -56,7 +56,7 @@ except Exception as e:
 def setup_indexes():
     """Create database indexes for optimized queries"""
     if not mongodb_available:
-        print("⚠️  Skipping index creation - MongoDB not available")
+        print("[WARNING] Skipping index creation - MongoDB not available")
         return
         
     try:
@@ -72,9 +72,13 @@ def setup_indexes():
         session_summary_collection.create_index("user_id")
         session_summary_collection.create_index("session_date")
         
-        print("✓ Database indexes created successfully")
+        print("[OK] Database indexes created successfully")
     except Exception as e:
         print(f"Warning: Index creation failed: {e}")
+
+# Initialize indexes on import
+setup_indexes()
+
 
 # Initialize indexes on import
 setup_indexes()

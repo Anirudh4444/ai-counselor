@@ -235,6 +235,7 @@ body {
     margin-bottom: 0.5rem;
     background: linear-gradient(to right, #fff, #94a3b8);
     -webkit-background-clip: text;
+    background-clip: text;
     -webkit-text-fill-color: transparent;
 }
 
@@ -528,6 +529,82 @@ textarea {
     background: var(--text-muted);
 }
 
+/* Thinking Animation */
+.thinking-message {
+    display: flex;
+    align-items: center;
+}
+
+.thinking-content {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+}
+
+.thinking-text {
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+.thinking-dots {
+    display: flex;
+}
+
+.dot-anim {
+    color: var(--primary-light);
+    animation: dotPulse 1.4s infinite;
+    font-size: 1.2rem;
+    font-weight: bold;
+}
+
+.dot-anim:nth-child(1) {
+    animation-delay: 0s;
+}
+
+.dot-anim:nth-child(2) {
+    animation-delay: 0.2s;
+}
+
+.dot-anim:nth-child(3) {
+    animation-delay: 0.4s;
+}
+
+@keyframes dotPulse {
+
+    0%,
+    60%,
+    100% {
+        opacity: 0.3;
+        transform: scale(0.8);
+    }
+
+    30% {
+        opacity: 1;
+        transform: scale(1.2);
+    }
+}
+
+/* Streaming message cursor effect */
+.message.streaming::after {
+    content: '▋';
+    animation: blink 0.7s infinite;
+    color: var(--primary-light);
+    margin-left: 2px;
+}
+
+@keyframes blink {
+
+    0%,
+    50% {
+        opacity: 1;
+    }
+
+    51%,
+    100% {
+        opacity: 0;
+    }
+}
+
 /* Mobile Responsiveness */
 @media (max-width: 640px) {
     .chat-area {
@@ -542,3 +619,8 @@ textarea {
         font-size: 1.5rem;
     }
 }
+.message { margin-bottom: 1.5rem; }
+
+.message.user { align-self: flex-end; background: rgba(79, 70, 229, 0.2); backdrop-filter: blur(10px); border: 1px solid rgba(79, 70, 229, 0.3); color: white; border-bottom-right-radius: 4px; box-shadow: 0 4px 15px rgba(79, 70, 229, 0.1); }
+.message.counselor { align-self: flex-start; background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); color: var(--text-color); border-bottom-left-radius: 4px; box-shadow: var(--shadow-md); }
+.messages-container { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 2rem; }

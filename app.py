@@ -1,12 +1,15 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr
 from typing import Optional
 from google import genai
 import os
 import traceback
+import asyncio
+import json
+import time
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import uuid
@@ -25,7 +28,9 @@ from vector_db import (
     get_session_history,
     create_session_summary,
     get_recent_summaries,
-    generate_summary_from_messages
+    get_recent_summaries,
+    generate_summary_from_messages,
+    delete_user_history
 )
 
 # Load environment variables from .env file (for local development)
@@ -43,7 +48,7 @@ app.add_middleware(
 )
 
 # Get API key from environment variable
-api_key = "AIzaSyDe31S3jhYpkW3HyJimbVGQe-GKgxQv-F"
+api_key = os.environ.get("GOOGLE_API_KEY")
 if not api_key:
     raise ValueError(
         "GOOGLE_API_KEY environment variable is not set. "
@@ -51,83 +56,35 @@ if not api_key:
     )
 client = genai.Client(api_key=api_key)
 
-# System prompt and few-shot examples
-SYSTEM_PROMPT = """You are a compassionate AI counselor specializing in mental health support for depression and anxiety. 
+# System prompt - optimized for speed with built-in chain-of-thought
+SYSTEM_PROMPT = """You are a compassionate, professional AI counselor. Your goal is to provide a safe, non-judgmental space for users to explore their feelings.
 
-Your approach:
-1. Listen actively and validate feelings without judgment
-2. Use chain-of-thought reasoning to deeply understand the person's situation
-3. Show empathy and emotional intelligence
-4. Provide thoughtful, personalized responses
-5. Suggest coping strategies when appropriate
-6. Recognize when professional help is needed
-7. Keep responses concise and focused (maximum 300 words)
+Persona & Tone:
+- Warm, empathetic, and professional
+- Patient and active listener
+- Uses "we" language to build partnership (e.g., "Let's explore this together")
 
-IMPORTANT: Always think through your response step-by-step before answering:
-- What is the person really feeling?
-- What might be the underlying cause?
-- What do they need most right now (validation, advice, or just to be heard)?
-- How can I respond with maximum empathy and helpfulness?
+Guidelines:
+1. Validate feelings first: Always acknowledge and validate the user's emotions before offering advice.
+2. Suggest practical exercises: When appropriate, suggest:
+   - Breathing exercises (e.g., 4-7-8 breathing)
+   - Grounding techniques (e.g., 5-4-3-2-1)
+   - Mindfulness or brief meditation
+3. NO MEDICATION: Never recommend, prescribe, or give advice about medication. If asked, state clearly that you cannot provide medical advice and suggest consulting a doctor.
+4. Crisis Safety: If the user mentions self-harm or suicide, prioritize safety and provide emergency resources immediately.
+5. Keep responses concise (under 200 words) but meaningful.
 
-IMPORTANT: Keep your response under 300 words. Be concise while maintaining warmth and empathy.
-"""
+Respond directly to the user as if you are sitting in the room with them."""
 
+# Reduced few-shot examples (2 instead of 5 for faster processing)
 FEW_SHOT_EXAMPLES = """
 Example 1:
-User: "I feel like I'm drowning in work and I can't keep up. Everyone else seems fine but I'm falling apart."
-
-Counselor's thought process:
-- Feeling: Overwhelmed, inadequate, isolated
-- Underlying issue: Possible burnout, comparison with others, lack of support
-- Need: Validation that their feelings are real and normal
-- Response approach: Normalize their experience, validate feelings, offer perspective
-
-Counselor: "What you're experiencing sounds incredibly overwhelming, and I want you to know that your feelings are completely valid. It's important to remember that what you see of others is often just the surface - many people struggle privately. Feeling like you're 'falling apart' is actually your mind and body telling you that you need support and rest. This isn't a weakness; it's a sign that you're human and that you've been carrying too much. Can you tell me more about what's been weighing on you most?"
+User: "I feel like I'm drowning in work and I can't keep up."
+Counselor: "What you're experiencing sounds incredibly overwhelming, and your feelings are completely valid. Feeling like you're 'falling apart' is your mind telling you that you need support. This isn't weakness - it's being human. Can you tell me more about what's been weighing on you most?"
 
 Example 2:
-User: "I don't see the point anymore. Nothing makes me happy."
-
-Counselor's thought process:
-- Feeling: Hopelessness, anhedonia (loss of pleasure), possible depression
-- Underlying issue: This could indicate clinical depression - serious concern
-- Need: Immediate validation, gentle exploration, professional help recommendation
-- Response approach: Take seriously, show care, assess safety, encourage professional support
-
-Counselor: "Thank you for sharing something so difficult with me. What you're describing - this feeling of emptiness and loss of joy - is a real symptom that many people with depression experience, and it's not your fault. These feelings can feel permanent, but they're not. I'm concerned about you and I want to help. First, I need to ask: are you having thoughts of hurting yourself? Also, have you been able to talk to a mental health professional? You deserve support from someone who can work with you regularly. In the meantime, I'm here to listen."
-
-Example 3:
 User: "I had a panic attack today and I'm scared it will happen again."
-
-Counselor's thought process:
-- Feeling: Fear, anxiety about anxiety, loss of control
-- Underlying issue: Panic disorder symptoms, fear of recurrence
-- Need: Reassurance, education about panic attacks, coping tools
-- Response approach: Normalize the experience, provide psychoeducation, teach grounding
-
-Counselor: "I'm sorry you went through that - panic attacks can be terrifying, especially when they're unexpected. First, I want you to know that you're safe now, and what you experienced, while frightening, wasn't dangerous. The fear of having another panic attack is very common and actually has a name: 'anticipatory anxiety.' Here's something that might help: panic attacks always pass, usually within 10-20 minutes. When you feel one coming, try the 5-4-3-2-1 grounding technique: name 5 things you see, 4 you can touch, 3 you hear, 2 you smell, and 1 you taste. This helps bring you back to the present moment. Would you like to talk about what was happening before the panic attack occurred?"
-
-Example 4:
-User: "I avoid social situations because I'm terrified people will judge me. I canceled plans again today and now I feel like a failure."
-
-Counselor's thought process:
-- Feeling: Social anxiety, shame, self-criticism, isolation
-- Underlying issue: Fear of negative evaluation, avoidance cycle reinforcing anxiety
-- Need: Validation without enabling avoidance, gentle challenge to negative self-talk
-- Response approach: Normalize the fear, address self-criticism, explore small steps forward
-
-Counselor: "First, I want to acknowledge how brave it is that you're sharing this with me. Social anxiety is incredibly common, and the fear of judgment can feel paralyzing. But I want to gently challenge the idea that you're a 'failure' - you're someone dealing with anxiety, and that's not a character flaw. The tricky thing about avoidance is that while it brings short-term relief, it can actually strengthen the anxiety over time. Your brain learns that social situations are dangerous, even though they're not. What if we thought about this differently? Instead of 'I'm a failure for canceling,' what if it's 'I'm struggling with anxiety, and I'm working on it.' Can you tell me what specifically worries you most about these social situations?"
-
-Example 5:
-User: "My partner and I keep fighting about the same things. I don't think they understand how I feel."
-
-Counselor's thought process:
-- Feeling: Frustration, feeling unheard, relationship distress
-- Underlying issue: Communication breakdown, possible unmet needs
-- Need: Help identifying patterns, communication tools, validation of both perspectives
-- Response approach: Explore the pattern, teach communication skills, avoid taking sides
-
-Counselor: "Relationship conflicts, especially recurring ones, can be really exhausting and lonely. It sounds like you're feeling unheard, which is painful. I'm curious - when you say they don't understand how you feel, have you been able to express your feelings using 'I' statements? For example, instead of 'You always...' trying 'I feel... when... because...' This can help your partner hear your feelings without becoming defensive. Also, it might help to ask yourself: what need of mine isn't being met? Is it connection, respect, support, or something else? Understanding this can help you communicate more clearly. Would you be willing to tell me about one of these recurring conflicts so we can explore it together?"
-
+Counselor: "I'm sorry you went through that - panic attacks can be terrifying. You're safe now, and what you experienced, while frightening, wasn't dangerous. When you feel one coming, try the 5-4-3-2-1 technique: name 5 things you see, 4 you touch, 3 you hear, 2 you smell, 1 you taste. Would you like to talk about what triggered it?"
 """
 
 # Store conversation history per session
@@ -368,7 +325,7 @@ Provide your internal thought process in a clear, structured way:"""
             contents=plan_prompt,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 1024,
+                "max_output_tokens": 2048,
             }
         )
         
@@ -400,7 +357,7 @@ Based on your analysis above, provide ONLY your compassionate counselor response
             contents=answer_prompt,
             config={
                 "temperature": 0.7,
-                "max_output_tokens": 1024,  # ~200 words limit
+                "max_output_tokens": 2048,  # ~200 words limit
             }
         )
         
@@ -447,6 +404,179 @@ Based on your analysis above, provide ONLY your compassionate counselor response
         traceback.print_exc()
         print("="*60 + "\n")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest, current_user: dict = Depends(get_current_user)):
+    """Streaming chat endpoint - optimized for speed with timing instrumentation"""
+    
+    async def generate_stream():
+        timings = {}
+        total_start = time.time()
+        
+        try:
+            if not request.message:
+                yield f"data: {json.dumps({'type': 'error', 'content': 'No message provided'})}\n\n"
+                return
+            
+            user_id = current_user["_id"]
+            session_id = request.session_id if request.session_id else str(uuid.uuid4())
+            
+            # Send session ID first
+            yield f"data: {json.dumps({'type': 'session', 'session_id': session_id})}\n\n"
+            
+            # Indicate thinking phase
+            yield f"data: {json.dumps({'type': 'thinking', 'content': 'Thinking...'})}\n\n"
+            
+            # --- TIMING: Context retrieval ---
+            context_start = time.time()
+            
+            context = ""
+            if session_id not in conversations:
+                conversations[session_id] = []
+                
+                # Retrieve relevant past context using vector search (reduced limit)
+                relevant_history = retrieve_relevant_history(
+                    user_id=user_id,
+                    current_message=request.message,
+                    limit=2,  # Reduced from 3
+                    similarity_threshold=0.7
+                )
+                
+                # Get recent session summaries for context (limit 1 for speed)
+                recent_summaries = get_recent_summaries(user_id, limit=1)
+                
+                # Build context string (simplified)
+                context_parts = []
+                
+                if recent_summaries:
+                    context_parts.append(f"Last session: {recent_summaries[0].get('summary', '')}")
+                
+                if relevant_history:
+                    for item in relevant_history[:2]:  # Limit to 2
+                        msg = item.get('message', {})
+                        message_text = msg.get('contents') or msg.get('content', '')
+                        if message_text:
+                            context_parts.append(f"{msg.get('role', '').title()}: {message_text[:100]}")
+                
+                context = "\n".join(context_parts) if context_parts else ""
+            
+            timings['context_retrieval'] = round(time.time() - context_start, 2)
+            
+            # Build conversation history (limit to last 5 exchanges for speed)
+            conversation_history = "\n".join(conversations[session_id][-10:])  # Last 5 exchanges (10 lines)
+            context_section = f"Previous context:\n{context}" if context else ""
+            
+            # --- Single optimized prompt (no separate plan step) ---
+            prompt = f"""{SYSTEM_PROMPT}
+
+{FEW_SHOT_EXAMPLES}
+
+{context_section}
+
+{conversation_history}
+
+User: "{request.message}"
+
+Counselor:"""
+            
+            # Signal start of response
+            yield f"data: {json.dumps({'type': 'start', 'content': ''})}\n\n"
+            
+            # --- TIMING: Gemini API call ---
+            gemini_start = time.time()
+            time_to_first_token = None
+            
+            # Stream the response using single Gemini call
+            full_response = ""
+            try:
+                stream_response = client.models.generate_content_stream(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config={
+                        "temperature": 0.7,
+                        "max_output_tokens": 2048,  # Reduced from 1024
+                    }
+                )
+                
+                for chunk in stream_response:
+                    if time_to_first_token is None:
+                        time_to_first_token = round(time.time() - gemini_start, 2)
+                    
+                    if chunk.text:
+                        full_response += chunk.text
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': chunk.text})}\n\n"
+                        
+            except Exception as stream_error:
+                # Fallback to non-streaming if streaming fails
+                print(f"Streaming failed, falling back: {stream_error}")
+                answer_response = client.models.generate_content(
+                    model="gemini-2.5-flash",
+                    contents=prompt,
+                    config={
+                        "temperature": 0.7,
+                        "max_output_tokens": 2048,
+                    }
+                )
+                if answer_response and hasattr(answer_response, 'text') and answer_response.text:
+                    full_response = answer_response.text.strip()
+                    # Send in chunks for smooth appearance
+                    words = full_response.split(' ')
+                    for word in words:
+                        yield f"data: {json.dumps({'type': 'chunk', 'content': word + ' '})}\n\n"
+            
+            timings['gemini_total'] = round(time.time() - gemini_start, 2)
+            timings['time_to_first_token'] = time_to_first_token
+            
+            if not full_response:
+                full_response = "I'm here to listen. Could you tell me more about what's on your mind?"
+                yield f"data: {json.dumps({'type': 'chunk', 'content': full_response})}\n\n"
+            
+            # --- TIMING: Database writes (fire and forget, don't block) ---
+            db_start = time.time()
+            
+            # Store messages (these run in background, don't block response)
+            try:
+                store_chat_message(user_id, session_id, "user", request.message)
+                store_chat_message(user_id, session_id, "counselor", full_response)
+            except Exception as db_error:
+                print(f"DB write error (non-blocking): {db_error}")
+            
+            timings['db_writes'] = round(time.time() - db_start, 2)
+            
+            # Update in-memory conversation history (limit to 5 exchanges)
+            conversations[session_id].append(f"User: {request.message}")
+            conversations[session_id].append(f"Counselor: {full_response}")
+            
+            if len(conversations[session_id]) > 10:  # 5 exchanges = 10 lines
+                conversations[session_id] = conversations[session_id][-10:]
+            
+            # Total time
+            timings['total'] = round(time.time() - total_start, 2)
+            
+            # Log timing info
+            print(f"\n[TIMING] Request completed:")
+            print(f"  Context retrieval: {timings.get('context_retrieval', 'N/A')}s")
+            print(f"  Time to first token: {timings.get('time_to_first_token', 'N/A')}s")
+            print(f"  Gemini total: {timings.get('gemini_total', 'N/A')}s")
+            print(f"  DB writes: {timings.get('db_writes', 'N/A')}s")
+            print(f"  TOTAL: {timings.get('total', 'N/A')}s\n")
+            
+            # Send completion signal
+            yield f"data: {json.dumps({'type': 'done', 'content': full_response})}\n\n"
+            
+        except Exception as e:
+            traceback.print_exc()
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 @app.post("/api/session/end")
 async def end_session(request: EndSessionRequest, current_user: dict = Depends(get_current_user)):
@@ -499,6 +629,30 @@ async def reset(request: ResetRequest):
         del conversations[request.session_id]
     return {"message": "Conversation reset"}
 
+@app.post("/api/user/delete-history")
+async def delete_history(current_user: dict = Depends(get_current_user)):
+    """Delete all chat history and summaries for the current user"""
+    try:
+        user_id = current_user["_id"]
+        
+        # Delete from database
+        delete_user_history(user_id)
+        
+        # Clear in-memory conversations for this user's sessions
+        # Note: This is a simple cleanup; in a multi-worker setup, this might need a distributed cache
+        sessions_to_remove = []
+        for session_id, msgs in conversations.items():
+            # This is an approximation since conversations dict doesn't store user_id directly
+            # Ideally, we'd track user_id -> [session_ids] mapping
+            pass 
+        
+        # For now, we rely on the client to clear the session ID and reload
+        
+        return {"status": "success", "message": "Chat history deleted"}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
    # port = int(os.environ.get("PORT", 8000))
@@ -510,3 +664,4 @@ if __name__ == "__main__":
     print("\nAPI Documentation: /docs")
     print("\nPress Ctrl+C to stop the server\n")
     uvicorn.run(app, host="0.0.0.0", port=port)
+
